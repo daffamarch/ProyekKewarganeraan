@@ -1,38 +1,34 @@
 'use client';
 
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { 
   Plus, 
   Search, 
-  ChevronDown, 
   Eye, 
   Trash2, 
   FileText, 
   Loader2, 
   RefreshCcw, 
   CheckCircle2, 
-  AlertTriangle, 
-  Lightbulb, 
-  ChevronRight,
-  Sparkles,
   Info,
   ImageIcon,
   FileSpreadsheet,
-  Clock,
+  Film,
   X
 } from 'lucide-react';
 import MemoryMap, { type AuditDocument } from '@/components/MemoryMap';
 import FileUpload from '@/components/FileUpload';
 import { clsx } from 'clsx';
+import { useSearch } from '@/components/AppShell';
 
 export default function UnitPage() {
   const { unitId } = useParams();
   const [items, setItems] = useState<AuditDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<AuditDocument | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const { searchQuery, setSearchQuery } = useSearch();
   const [showNotification, setShowNotification] = useState<string | null>(null);
   
   // State untuk Modal Tambah Dokumen
@@ -40,7 +36,7 @@ export default function UnitPage() {
   const [newDoc, setNewDoc] = useState({ nama: '', format: 'PDF' });
   const [isSaving, setIsSaving] = useState(false);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const { data: itemsData } = await supabase
@@ -52,22 +48,23 @@ export default function UnitPage() {
       const mappedData = itemsData || [];
       setItems(mappedData);
       
-      // Auto select first item if none selected
+      // Auto select first item if none selected, or refresh current selection
       if (!selectedItem && mappedData.length > 0) {
         setSelectedItem(mappedData[0]);
       } else if (selectedItem) {
         const updated = mappedData.find(i => i.id === selectedItem.id);
-        if (updated) setSelectedItem(updated);
+        setSelectedItem(updated || (mappedData.length > 0 ? mappedData[0] : null));
       }
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [unitId, selectedItem]);
 
   useEffect(() => {
     fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitId]);
 
   const handleAddDocument = async (e: React.FormEvent) => {
@@ -88,7 +85,20 @@ export default function UnitPage() {
 
       if (error) throw error;
       
-      handleQuickAction('Dokumen baru berhasil ditambahkan');
+      window.dispatchEvent(new CustomEvent('sidoku-document-changed', {
+        detail: {
+          eventType: 'INSERT',
+          doc: {
+            nama_eviden: newDoc.nama,
+            format_req: newDoc.format,
+            unit: unitId,
+            is_uploaded: false,
+            status: 'missing'
+          }
+        }
+      }));
+
+      handleQuickAction('Item eviden baru berhasil ditambahkan');
       setShowAddModal(false);
       setNewDoc({ nama: '', format: 'PDF' });
       fetchData();
@@ -99,9 +109,41 @@ export default function UnitPage() {
     }
   };
 
+  const handleDeleteItem = async (id: number) => {
+    if (!confirm('Hapus item ini beserta file-nya (jika ada) dari daftar inventaris?')) return;
+
+    try {
+      // Hapus file fisik via API jika ada
+      const item = items.find(i => i.id === id);
+      if (item?.is_uploaded && item?.file_url) {
+        await fetch('/api/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentId: id }),
+        });
+      }
+
+      // Hapus record dari Supabase
+      await supabase.from('audit_documents').delete().eq('id', id);
+      
+      window.dispatchEvent(new CustomEvent('sidoku-document-changed', {
+        detail: {
+          eventType: 'DELETE',
+          doc: { id }
+        }
+      }));
+
+      if (selectedItem?.id === id) setSelectedItem(null);
+      handleQuickAction('Item berhasil dihapus');
+      fetchData();
+    } catch (err: any) {
+      handleQuickAction('Gagal menghapus: ' + err.message);
+    }
+  };
+
   const stats = useMemo(() => {
     const total = items.length;
-    const uploaded = items.filter(i => i.is_uploaded).length;
+    const uploaded = items.filter(i => i.is_uploaded && i.status !== 'missing').length;
     const missing = total - uploaded;
     return { 
       total, 
@@ -123,6 +165,26 @@ export default function UnitPage() {
     setTimeout(() => setShowNotification(null), 3000);
   };
 
+  const getFormatIcon = (format: string) => {
+    switch (format) {
+      case 'PDF': return <FileText size={20} />;
+      case 'JPG': return <ImageIcon size={20} />;
+      case 'EXCEL': return <FileSpreadsheet size={20} />;
+      case 'MP4': return <Film size={20} />;
+      default: return <FileText size={20} />;
+    }
+  };
+
+  const getFormatColor = (format: string) => {
+    switch (format) {
+      case 'PDF': return 'bg-rose-50 text-rose-500';
+      case 'JPG': return 'bg-blue-50 text-blue-500';
+      case 'EXCEL': return 'bg-emerald-50 text-emerald-600';
+      case 'MP4': return 'bg-purple-50 text-purple-600';
+      default: return 'bg-slate-50 text-slate-400';
+    }
+  };
+
   if (loading && items.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-[60vh]">
@@ -132,10 +194,10 @@ export default function UnitPage() {
   }
 
   return (
-    <div className="space-y-10 animate-fade-in relative pb-20">
+    <div className="space-y-8 animate-fade-in relative pb-20">
       {/* Notifikasi Toast */}
       {showNotification && (
-        <div className="fixed top-24 right-10 bg-[#1E3A8A] text-white px-6 py-4 rounded-2xl shadow-2xl z-[100] flex items-center gap-3 animate-slide-up">
+        <div className="fixed top-24 right-6 lg:right-10 bg-[#1E3A8A] text-white px-6 py-4 rounded-2xl shadow-2xl z-[100] flex items-center gap-3 animate-slide-up">
            <Info size={20} />
            <span className="text-sm font-black uppercase tracking-widest">{showNotification}</span>
         </div>
@@ -143,16 +205,16 @@ export default function UnitPage() {
 
       {/* Modal Tambah Dokumen */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-[#1A1C1E]/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-          <div className="bg-white rounded-[2.5rem] w-full max-w-lg p-10 shadow-2xl animate-scale-in">
-            <div className="flex justify-between items-center mb-8">
-              <h3 className="text-2xl font-black text-[#1E3A8A]">Tambah Item Dokumen</h3>
+        <div className="fixed inset-0 bg-[#1A1C1E]/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2rem] w-full max-w-lg p-8 shadow-2xl animate-slide-up">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-black text-[#1E3A8A]">Tambah Item Eviden</h3>
               <button onClick={() => setShowAddModal(false)} className="text-slate-300 hover:text-rose-500 transition-colors">
-                <X size={24} />
+                <X size={22} />
               </button>
             </div>
             
-            <form onSubmit={handleAddDocument} className="space-y-6">
+            <form onSubmit={handleAddDocument} className="space-y-5">
               <div>
                 <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Nama Dokumen Eviden</label>
                 <input 
@@ -160,13 +222,14 @@ export default function UnitPage() {
                   type="text" 
                   value={newDoc.nama}
                   onChange={(e) => setNewDoc({...newDoc, nama: e.target.value})}
-                  placeholder="Contoh: Surat Perintah Tugas..."
-                  className="w-full bg-[#F8F9FB] border border-[#E9ECEF] rounded-xl px-5 py-4 text-sm font-bold focus:ring-2 focus:ring-[#1E3A8A]/10 outline-none"
+                  placeholder="Contoh: Surat Perintah Tugas (SPT)..."
+                  className="w-full bg-[#F8F9FB] border border-[#E9ECEF] rounded-xl px-5 py-3.5 text-sm font-bold focus:ring-2 focus:ring-[#1E3A8A]/10 outline-none"
+                  required
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Syarat Format Berkas</label>
-                <div className="grid grid-cols-3 gap-3">
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Format File yang Dibutuhkan</label>
+                <div className="grid grid-cols-4 gap-2">
                   {['PDF', 'JPG', 'EXCEL', 'MP4'].map((fmt) => (
                     <button
                       key={fmt}
@@ -185,9 +248,9 @@ export default function UnitPage() {
               <button 
                 type="submit" 
                 disabled={isSaving || !newDoc.nama}
-                className="w-full bg-[#1E3A8A] text-white py-4 rounded-xl font-black text-sm uppercase tracking-widest flex items-center justify-center gap-3 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50"
+                className="w-full bg-[#1E3A8A] text-white py-3.5 rounded-xl font-black text-sm uppercase tracking-widest flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50"
               >
-                {isSaving ? <Loader2 className="animate-spin" /> : <CheckCircle2 size={20} />} Simpan ke Inventaris
+                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <CheckCircle2 size={18} />} Simpan ke Inventaris
               </button>
             </form>
           </div>
@@ -195,105 +258,67 @@ export default function UnitPage() {
       )}
 
       {/* Header Halaman */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
         <div>
-          <h1 className="text-4xl font-black text-[#1E3A8A] tracking-tight">
-            Dasbor {unitId === 'UP' ? 'Unit Pengolah' : 'Unit Kearsipan'}
+          <h1 className="text-3xl lg:text-4xl font-black text-[#1E3A8A] tracking-tight">
+            {unitId === 'UP' ? 'Unit Pengolah' : 'Unit Kearsipan'}
           </h1>
-          <p className="text-lg font-medium text-slate-400 mt-2">Kelola dan pantau inventaris dokumen eviden Anda.</p>
+          <p className="text-base font-medium text-slate-400 mt-1">Kelola dan upload dokumen eviden audit.</p>
         </div>
         <button 
           onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-2.5 bg-[#1E3A8A] text-white px-8 py-4 rounded-2xl font-black text-sm shadow-xl shadow-[#1E3A8A]/20 hover:scale-105 active:scale-95 transition-all"
+          className="flex items-center gap-2 bg-[#1E3A8A] text-white px-6 py-3 rounded-2xl font-black text-sm shadow-xl shadow-[#1E3A8A]/20 hover:scale-105 active:scale-95 transition-all"
         >
-          <Plus size={20} strokeWidth={3} /> Tambah Item Baru
+          <Plus size={18} strokeWidth={3} /> Tambah Item
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Statistik Block */}
-        <div className="lg:col-span-2 bg-white rounded-[2.5rem] border border-[#E9ECEF] p-10 shadow-sm">
-          <div className="flex justify-between items-start mb-10">
-            <h3 className="text-2xl font-black text-[#1A1C1E]">Statistik Dokumen</h3>
-            <div className="flex gap-3">
-              <span className="px-4 py-1.5 bg-emerald-50 text-emerald-600 text-[11px] font-black rounded-xl uppercase tracking-widest">Tersedia: {stats.uploaded}</span>
-              <span className="px-4 py-1.5 bg-rose-50 text-rose-600 text-[11px] font-black rounded-xl uppercase tracking-widest">Kurang: {stats.missing}</span>
-            </div>
+      {/* Progress Bar */}
+      <div className="bg-white rounded-[2rem] border border-[#E9ECEF] p-6 shadow-sm">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+          <div className="flex items-center gap-4">
+            <span className="text-sm font-black text-slate-400 uppercase tracking-widest">Progress Kelengkapan</span>
+            <span className="text-lg font-black text-[#1E3A8A]">{stats.percent}%</span>
           </div>
-
-          <div className="space-y-8">
-            <div>
-              <div className="flex justify-between items-end mb-3">
-                <span className="text-sm font-black text-slate-400 uppercase tracking-widest">Progres Kesiapan Audit</span>
-                <span className="text-xl font-black text-[#1E3A8A]">{stats.percent}%</span>
-              </div>
-              <div className="h-4 bg-[#F8F9FB] rounded-full overflow-hidden p-0.5 border border-[#E9ECEF]">
-                <div className="h-full bg-[#1E3A8A] rounded-full transition-all duration-1000 shadow-sm" style={{ width: `${stats.percent}%` }} />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-6 pt-2">
-              <StatsTile label="TOTAL DOKUMEN" value={stats.total} />
-              <StatsTile label="SUDAH DIUNGGAH" value={stats.uploaded} color="emerald" />
-              <StatsTile label="BELUM TERSEDIA" value={stats.missing} color="rose" />
-            </div>
+          <div className="flex gap-3">
+            <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-black rounded-lg uppercase">Lengkap: {stats.uploaded}</span>
+            <span className="px-3 py-1 bg-rose-50 text-rose-600 text-[10px] font-black rounded-lg uppercase">Belum: {stats.missing}</span>
+            <span className="px-3 py-1 bg-[#F8F9FB] text-slate-400 text-[10px] font-black rounded-lg uppercase border border-[#E9ECEF]">Total: {stats.total}</span>
           </div>
         </div>
-
-        {/* Informasi Status Operasional */}
-        <div className="bg-[#1E3A8A] rounded-[2.5rem] p-10 text-white relative overflow-hidden group shadow-2xl shadow-[#1E3A8A]/30">
-          <div className="relative z-10 h-full flex flex-col justify-between">
-            <div className="w-14 h-14 bg-white/10 rounded-2xl flex items-center justify-center border border-white/10 mb-8">
-              <CheckCircle2 size={28} className="text-white" />
-            </div>
-            <div>
-              <h4 className="text-2xl font-black mb-4 tracking-tight">Status Operasional</h4>
-              <p className="text-sm text-white/60 leading-relaxed font-medium">
-                Gunakan tombol "Tambah Item Baru" untuk memasukkan daftar dokumen yang diwajibkan oleh tim audit.
-              </p>
-            </div>
-            <button 
-              onClick={fetchData}
-              className="flex items-center gap-3 text-[11px] font-black uppercase tracking-widest text-emerald-400 mt-10 hover:translate-x-1 transition-all"
-            >
-               <RefreshCcw size={14} /> 
-               Sinkronisasi Database
-            </button>
-          </div>
-          <div className="absolute -bottom-10 -right-10 text-white/[0.03] group-hover:scale-125 transition-transform duration-700 pointer-events-none">
-            <RefreshCcw size={320} strokeWidth={0.5} />
-          </div>
+        <div className="h-4 bg-slate-100 rounded-full overflow-hidden p-0.5">
+          <div className="h-full bg-[#1E3A8A] rounded-full transition-all duration-1000" style={{ width: `${stats.percent}%` }} />
         </div>
       </div>
 
-      {/* Daftar Inventaris (Tabel) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-8 space-y-8">
-          <div className="bg-white rounded-[2.5rem] border border-[#E9ECEF] overflow-hidden shadow-sm">
-            <div className="p-8 border-b border-[#E9ECEF] flex flex-col sm:flex-row items-center justify-between gap-6">
-              <h3 className="text-2xl font-black text-[#1A1C1E]">Inventaris Eviden</h3>
-              
-              <div className="relative w-full sm:w-80">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
+      {/* Layout: Tabel + Panel Samping */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Tabel Inventaris Eviden */}
+        <div className="lg:col-span-7 xl:col-span-8 space-y-6">
+          <div className="bg-white rounded-[2rem] border border-[#E9ECEF] overflow-hidden shadow-sm">
+            <div className="p-6 border-b border-[#E9ECEF] flex flex-col sm:flex-row items-center justify-between gap-4">
+              <h3 className="text-lg font-black text-[#1A1C1E]">Daftar Item Eviden</h3>
+              <div className="relative w-full sm:w-72">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
                 <input 
                   type="text" 
-                  placeholder="Cari nama atau kategori..."
+                  placeholder="Cari nama atau format..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-[#F8F9FB] rounded-xl py-3 pl-12 pr-4 text-xs font-bold border-none focus:ring-2 focus:ring-[#1E3A8A]/10 outline-none"
+                  className="w-full bg-[#F8F9FB] rounded-xl py-2.5 pl-11 pr-4 text-xs font-bold border-none focus:ring-2 focus:ring-[#1E3A8A]/10 outline-none"
                 />
               </div>
             </div>
 
-            <div className="overflow-x-auto min-h-[200px]">
+            <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
               {filteredItems.length > 0 ? (
                 <table className="w-full text-left">
-                  <thead>
-                    <tr className="bg-slate-50/50 text-[11px] font-black text-slate-400 uppercase tracking-widest border-b border-[#E9ECEF]">
-                      <th className="px-8 py-5">NAMA DOKUMEN</th>
-                      <th className="px-8 py-5">SYARAT FORMAT</th>
-                      <th className="px-8 py-5">STATUS</th>
-                      <th className="px-8 py-5 text-right">AKSI</th>
+                  <thead className="sticky top-0 bg-white z-10">
+                    <tr className="bg-slate-50/80 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-[#E9ECEF]">
+                      <th className="px-6 py-4">NAMA DOKUMEN</th>
+                      <th className="px-6 py-4">FORMAT</th>
+                      <th className="px-6 py-4">STATUS</th>
+                      <th className="px-6 py-4 text-right">AKSI</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E9ECEF]">
@@ -302,47 +327,40 @@ export default function UnitPage() {
                         key={item.id} 
                         className={clsx(
                           "hover:bg-[#F8F9FB] transition-colors cursor-pointer group",
-                          selectedItem?.id === item.id && "bg-[#F0F4FF]"
+                          selectedItem?.id === item.id && "bg-[#EEF2FF]"
                         )}
                         onClick={() => setSelectedItem(item)}
                       >
-                        <td className="px-8 py-6">
-                          <div className="flex items-center gap-4">
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
                             <div className={clsx(
-                              "w-10 h-10 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110",
-                              item.format_req === 'PDF' && "bg-rose-50 text-rose-500",
-                              item.format_req === 'JPG' && "bg-blue-50 text-blue-500",
-                              item.format_req === 'EXCEL' && "bg-emerald-50 text-emerald-600"
+                              "w-9 h-9 rounded-lg flex items-center justify-center transition-transform group-hover:scale-110 flex-shrink-0",
+                              getFormatColor(item.format_req)
                             )}>
-                              {item.format_req === 'PDF' ? <FileText size={22} /> : 
-                               item.format_req === 'JPG' ? <ImageIcon size={22} /> : 
-                               <FileSpreadsheet size={22} />}
+                              {getFormatIcon(item.format_req)}
                             </div>
-                            <span className="text-sm font-black text-[#1A1C1E]">{item.nama_eviden}</span>
+                            <span className="text-sm font-bold text-[#1A1C1E] break-words">{item.nama_eviden}</span>
                           </div>
                         </td>
-                        <td className="px-8 py-6">
-                          <span className="px-3 py-1 bg-[#F8F9FB] text-slate-400 text-[10px] font-black rounded-lg uppercase border border-[#E9ECEF]">{item.format_req}</span>
+                        <td className="px-6 py-4">
+                          <span className="px-2.5 py-0.5 bg-[#F8F9FB] text-slate-400 text-[9px] font-black rounded-md uppercase border border-[#E9ECEF]">{item.format_req}</span>
                         </td>
-                        <td className="px-8 py-6">
+                        <td className="px-6 py-4">
                           <StatusPill status={item.status} isUploaded={item.is_uploaded} />
                         </td>
-                        <td className="px-8 py-6 text-right">
-                          <div className="flex items-center justify-end gap-5 text-slate-200 group-hover:text-slate-400 transition-colors">
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-3 text-slate-200 group-hover:text-slate-400 transition-colors">
                             <button onClick={(e) => {
                               e.stopPropagation();
                               setSelectedItem(item);
-                            }} title="Pratinjau Berkas">
-                              <Eye size={22} className="hover:text-[#1E3A8A] transition-colors" />
+                            }} title="Upload / Preview">
+                              <Eye size={18} className="hover:text-[#1E3A8A] transition-colors" />
                             </button>
-                            <button onClick={async (e) => {
+                            <button onClick={(e) => {
                               e.stopPropagation();
-                              if(confirm('Hapus item daftar ini?')) {
-                                await supabase.from('audit_documents').delete().eq('id', item.id);
-                                fetchData();
-                              }
+                              handleDeleteItem(item.id);
                             }} title="Hapus Item">
-                              <Trash2 size={22} className="hover:text-rose-500 transition-colors" />
+                              <Trash2 size={18} className="hover:text-rose-500 transition-colors" />
                             </button>
                           </div>
                         </td>
@@ -351,111 +369,82 @@ export default function UnitPage() {
                   </tbody>
                 </table>
               ) : (
-                <div className="py-20 text-center flex flex-col items-center gap-6 opacity-30">
-                   <div className="w-20 h-20 bg-slate-50 rounded-[2rem] flex items-center justify-center border border-[#E9ECEF]">
-                     <FileText size={48} strokeWidth={1} />
-                   </div>
-                   <p className="text-sm font-black text-slate-600 uppercase tracking-widest">Inventaris Kosong</p>
+                <div className="py-16 text-center flex flex-col items-center gap-4 opacity-30">
+                  <FileText size={48} strokeWidth={1} />
+                  <p className="text-xs font-black text-slate-600 uppercase tracking-widest">
+                    {items.length === 0 ? 'Belum ada item — klik \"Tambah Item\" untuk mulai' : 'Tidak ada hasil pencarian'}
+                  </p>
                 </div>
               )}
             </div>
           </div>
         </div>
 
-        {/* Panel Samping */}
-        <div className="lg:col-span-4 space-y-8">
-           {selectedItem ? (
-             <FileUpload 
-               documentId={selectedItem.id}
-               itemName={selectedItem.nama_eviden}
-               requiredFormat={selectedItem.format_req}
-               status={selectedItem.status}
-               existingFile={selectedItem.is_uploaded && selectedItem.file_url ? {
-                 url: selectedItem.file_url,
-                 name: 'ID: ' + selectedItem.id,
-                 format: selectedItem.format_req
-               } : undefined}
-               onComplete={fetchData}
-             />
-           ) : (
-             <div className="bg-white rounded-[2.5rem] border-2 border-dashed border-[#E9ECEF] p-20 text-center opacity-30 flex flex-col items-center gap-4">
-                <FileText size={64} strokeWidth={1} className="text-slate-300" />
-                <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Pilih Item</p>
-             </div>
-           )}
+        {/* Panel Samping: Upload + Memory Map */}
+        <div className="lg:col-span-5 xl:col-span-4 space-y-6">
+          {selectedItem ? (
+            <FileUpload 
+              documentId={selectedItem.id}
+              itemName={selectedItem.nama_eviden}
+              requiredFormat={selectedItem.format_req}
+              unitId={String(unitId)}
+              status={selectedItem.status as any}
+              existingFileUrl={selectedItem.is_uploaded ? selectedItem.file_url : null}
+              onComplete={fetchData}
+            />
+          ) : (
+            <div className="bg-white rounded-[2rem] border-2 border-dashed border-[#E9ECEF] p-14 text-center opacity-30 flex flex-col items-center gap-3">
+              <FileText size={48} strokeWidth={1} className="text-slate-300" />
+              <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Pilih item dari tabel untuk upload</p>
+            </div>
+          )}
 
-           <div className="bg-white rounded-[2.5rem] border border-[#E9ECEF] p-10 shadow-sm">
-              <h4 className="text-xl font-black text-[#1A1C1E] mb-8">Peta Visual Eviden</h4>
-              <MemoryMap 
-                items={items} 
-                onSelect={(item) => setSelectedItem(item)}
-                selectedId={selectedItem?.id}
-              />
-           </div>
+          <div className="bg-white rounded-[2rem] border border-[#E9ECEF] p-6 shadow-sm">
+            <h4 className="text-base font-black text-[#1A1C1E] mb-4">Peta Visual Eviden</h4>
+            <MemoryMap 
+              items={items} 
+              onSelect={(item) => setSelectedItem(item)}
+              selectedId={selectedItem?.id}
+            />
+          </div>
+
+          <button 
+            onClick={fetchData}
+            className="w-full flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400 py-3 border border-[#E9ECEF] rounded-2xl hover:bg-[#F8F9FB] transition-all"
+          >
+            <RefreshCcw size={14} /> Sinkronisasi Data
+          </button>
         </div>
       </div>
 
-      {/* Floating Action Button */}
+      {/* Floating Action Button (Mobile) */}
       <button 
         onClick={() => setShowAddModal(true)}
-        className="fixed bottom-10 right-10 w-20 h-20 bg-[#1E3A8A] text-white rounded-full flex items-center justify-center shadow-2xl shadow-[#1E3A8A]/40 hover:scale-110 active:scale-95 transition-all z-[60]"
+        className="fixed bottom-6 right-6 w-16 h-16 bg-[#1E3A8A] text-white rounded-full flex items-center justify-center shadow-2xl shadow-[#1E3A8A]/40 hover:scale-110 active:scale-95 transition-all z-[60] lg:hidden"
       >
-        <Plus size={32} strokeWidth={3} />
+        <Plus size={28} strokeWidth={3} />
       </button>
     </div>
   );
 }
 
-function StatsTile({ label, value, color = "indigo" }: any) {
-  const colors: any = {
-    indigo: "bg-[#F8F9FB] text-[#1E3A8A]",
-    rose: "bg-rose-50/50 text-rose-600",
-    emerald: "bg-emerald-50/50 text-emerald-600"
-  };
-  return (
-    <div className={clsx("p-6 rounded-[2rem] border border-[#E9ECEF] shadow-sm", colors[color])}>
-      <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-50 mb-3">{label}</p>
-      <p className="text-3xl font-black tracking-tight">{value}</p>
-    </div>
-  );
-}
-
-function StatusPill({ status, isUploaded }: any) {
-  if (!isUploaded) return (
-    <div className="flex items-center gap-2.5 text-slate-300">
-      <div className="w-2 h-2 bg-slate-200 rounded-full" />
-      <span className="text-[11px] font-black uppercase tracking-widest">Belum Ada</span>
-    </div>
-  );
+function StatusPill({ status, isUploaded }: { status?: string; isUploaded: boolean }) {
   if (status === 'revision') return (
-    <div className="flex items-center gap-2.5 text-amber-500 font-black">
+    <div className="flex items-center gap-2 text-amber-500 animate-pulse">
       <div className="w-2 h-2 bg-amber-500 rounded-full" />
-      <span className="text-[11px] font-black uppercase tracking-widest">Diproses</span>
+      <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 font-black">Revisi</span>
+    </div>
+  );
+  if (!isUploaded) return (
+    <div className="flex items-center gap-2 text-slate-300">
+      <div className="w-2 h-2 bg-slate-200 rounded-full" />
+      <span className="text-[10px] font-black uppercase tracking-widest">Belum Ada</span>
     </div>
   );
   return (
-    <div className="flex items-center gap-2.5 text-emerald-500 font-black">
+    <div className="flex items-center gap-2 text-emerald-500">
       <div className="w-2 h-2 bg-emerald-500 rounded-full" />
-      <span className="text-[11px] font-black uppercase tracking-widest">Tersedia</span>
-    </div>
-  );
-}
-
-function BottomCard({ title, icon, color, children }: any) {
-  const colors: any = {
-    emerald: "bg-emerald-50 text-emerald-600",
-    amber: "bg-amber-50 text-amber-600",
-    indigo: "bg-indigo-50 text-indigo-600"
-  };
-  return (
-    <div className="bg-white rounded-[2.5rem] border border-[#E9ECEF] p-10 shadow-sm h-full">
-       <h4 className="text-xl font-black text-[#1A1C1E] mb-8 flex items-center gap-4">
-         <div className={clsx("w-14 h-14 rounded-2xl flex items-center justify-center border border-opacity-10", colors[color])}>
-           {icon}
-         </div>
-         {title}
-       </h4>
-       {children}
+      <span className="text-[10px] font-black uppercase tracking-widest">Tersedia</span>
     </div>
   );
 }
