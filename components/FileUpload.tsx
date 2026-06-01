@@ -73,6 +73,15 @@ export default function FileUpload({
 
   const handleUpload = async (file: File) => {
     if (!file) return;
+    
+    // Validasi ukuran file (maksimal 5MB)
+    const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+    if (file.size > MAX_SIZE) {
+      setError("File terlalu besar. Ukuran maksimal file adalah 5MB.");
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     setUploading(true);
     setError(null);
 

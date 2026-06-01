@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server';
-import { unlink } from 'fs/promises';
-import path from 'path';
 import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
-
-const STORAGE_ROOT = process.env.LOCAL_STORAGE_PATH || 'C:/SIDOKU_FILES';
 
 export async function POST(request: Request) {
   try {
@@ -24,19 +20,18 @@ export async function POST(request: Request) {
 
     if (fetchError) throw fetchError;
 
-    // --- Hapus file fisik dari disk ---
+    // --- Hapus file fisik dari Supabase Storage ---
     if (doc?.file_url) {
       try {
-        const absolutePath = path.join(STORAGE_ROOT, doc.file_url);
-        // Pastikan path aman (di dalam STORAGE_ROOT)
-        const resolved = path.resolve(absolutePath);
-        const resolvedRoot = path.resolve(STORAGE_ROOT);
-        if (resolved.startsWith(resolvedRoot)) {
-          await unlink(resolved);
+        const { error: deleteError } = await supabase.storage
+          .from('dokumen-sidoku')
+          .remove([doc.file_url]);
+
+        if (deleteError) {
+          console.warn('Gagal menghapus file dari Supabase Storage:', deleteError.message);
         }
       } catch (e: any) {
-        // File mungkin sudah dihapus manual — tidak apa-apa
-        console.warn('File tidak ditemukan di disk:', doc.file_url);
+        console.warn('Kesalahan saat menghapus dari Supabase Storage:', e.message);
       }
     }
 

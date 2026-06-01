@@ -1,10 +1,7 @@
 import { NextResponse } from 'next/server';
-import { readFile, stat } from 'fs/promises';
-import path from 'path';
+import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
-
-const STORAGE_ROOT = process.env.LOCAL_STORAGE_PATH || 'C:/SIDOKU_FILES';
 
 const MIME_TYPES: Record<string, string> = {
   pdf: 'application/pdf',
@@ -22,27 +19,26 @@ export async function GET(
   { params }: { params: { path: string[] } }
 ) {
   try {
-    const filePath = path.join(STORAGE_ROOT, ...params.path);
+    const relativePath = params.path.join('/');
 
-    // Keamanan: pastikan path tidak keluar dari STORAGE_ROOT
-    const resolvedPath = path.resolve(filePath);
-    const resolvedRoot = path.resolve(STORAGE_ROOT);
-    if (!resolvedPath.startsWith(resolvedRoot)) {
-      return NextResponse.json({ error: 'Akses ditolak.' }, { status: 403 });
+    // Download from Supabase Storage
+    const { data, error } = await supabase.storage
+      .from('dokumen-sidoku')
+      .download(relativePath);
+
+    if (error || !data) {
+      throw new Error(error?.message || 'File tidak ditemukan');
     }
 
-    // Pastikan file ada
-    await stat(resolvedPath);
-
-    const ext = path.extname(resolvedPath).slice(1).toLowerCase();
+    const ext = relativePath.split('.').pop()?.toLowerCase() || '';
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
-    const fileBuffer = await readFile(resolvedPath);
+    const fileArrayBuffer = await data.arrayBuffer();
 
-    return new NextResponse(fileBuffer, {
+    return new NextResponse(Buffer.from(fileArrayBuffer), {
       headers: {
         'Content-Type': contentType,
-        'Content-Disposition': `inline; filename="${path.basename(resolvedPath)}"`,
+        'Content-Disposition': `inline; filename="${relativePath.split('/').pop()}"`,
         'Cache-Control': 'no-cache',
       },
     });

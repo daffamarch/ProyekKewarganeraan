@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server';
-import { writeFile, mkdir } from 'fs/promises';
-import path from 'path';
 import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
-
-const STORAGE_ROOT = process.env.LOCAL_STORAGE_PATH || 'C:/SIDOKU_FILES';
 
 export async function POST(request: Request) {
   try {
@@ -18,6 +14,15 @@ export async function POST(request: Request) {
     if (!file || !documentId || !unit || !formatReq) {
       return NextResponse.json(
         { error: 'Field wajib tidak lengkap (file, documentId, unit, formatReq).' },
+        { status: 400 }
+      );
+    }
+
+    // --- Validasi ukuran file (maksimal 5MB) ---
+    const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+    if (file.size > MAX_SIZE) {
+      return NextResponse.json(
+        { error: `File terlalu besar. Ukuran maksimal adalah 5MB.` },
         { status: 400 }
       );
     }
@@ -38,17 +43,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // --- Buat direktori unit jika belum ada ---
-    const unitDir = path.join(STORAGE_ROOT, unit);
-    await mkdir(unitDir, { recursive: true });
-
-    // --- Simpan file ke disk ---
     const safeFileName = `${documentId}_${Date.now()}.${ext.toLowerCase()}`;
-    const absolutePath = path.join(unitDir, safeFileName);
     const relativePath = `${unit}/${safeFileName}`;
 
     const bytes = await file.arrayBuffer();
-    await writeFile(absolutePath, Buffer.from(bytes));
+    const buffer = Buffer.from(bytes);
+
+    // --- Simpan file ke Supabase Storage ---
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('dokumen-sidoku')
+      .upload(relativePath, buffer, {
+        contentType: file.type,
+        upsert: true
+      });
+
+    if (uploadError) {
+      throw new Error(`Gagal mengunggah ke Supabase Storage: ${uploadError.message}`);
+    }
 
     // --- Update metadata di Supabase ---
     const { error: dbError } = await supabase
